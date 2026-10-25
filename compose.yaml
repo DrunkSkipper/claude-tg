@@ -1,0 +1,18 @@
+services:
+  claude-tg:
+    build: .
+    image: claude-tg:latest
+    container_name: claude-tg
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # transcripts, keys, settings, target/topics state — in-container
+      # sessions persist here
+      - ~/.claude:/root/.claude
+      # the CLI's config file (project trust, onboarding) — separate file
+      - ~/.claude.json:/root/.claude.json
+      # NOTE: no /tmp/cc-socks mount — the bridge injects into its OWN
+      # container-side sessions via the container-local socket dir. Mounting
+      # host sockets over it would shadow them (and on macOS the host domain
+      # is invisible to the container anyway).

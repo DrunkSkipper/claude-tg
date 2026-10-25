@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-tg"
+version = "1.0.0"
+description = "Telegram remote control for Claude Code sessions"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "claude-tg contributors" }]
+# stdlib only: urllib.request, json, socket, subprocess, threading, hashlib,
+# re, pathlib — stdlib presence is guaranteed by requires-python; do NOT add
+# "urllib" as a dependency (no such PyPI distribution, name has been squatted).
+dependencies = []
+
+[project.optional-dependencies]
+socks = ["PySocks>=1.7.1"]  # only needed for socks5(h) TELEGRAM_HTTP_PROXY
+
+[project.scripts]
+claude-tg = "claude_tg:main"
+
+[tool.setuptools.packages.find]
+include = ["claude_tg*"]
