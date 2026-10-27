@@ -19,6 +19,9 @@ Bot commands:
   /sessions          list running sessions, tap to target
   /new <dir> [tmux|uds|bg]
                      spawn a session in dir (default: tmux window)
+  /oneshot [<dir>] <question>
+                     throwaway bg session: ask one question, deliver the
+                     answer, close the session
   /status            show target session state + pane status line
   /stop              interrupt the target's current turn
   /close             close the targeted session
@@ -79,6 +82,7 @@ BOT_COMMANDS = [
     {"command": "status", "description": "Show target session state"},
     {"command": "stop", "description": "Interrupt the current turn"},
     {"command": "loop", "description": "Ralph Loop: /loop <prompt>"},
+    {"command": "oneshot", "description": "One-shot Q&A: /oneshot [<dir>] <question>"},
     {"command": "help", "description": "Show bot usage"},
 ]
 BLOCKED_COMMANDS = [
@@ -350,14 +354,15 @@ def collect_turn_text(tpath, offset, marker):
 
 # --- turn lifecycle -------------------------------------------------------------
 
-def inject_text(session_id, text, chat_id, loop=None):
+def inject_text(session_id, text, chat_id, loop=None, oneshot=False):
     """Queue or inject. Channel is chosen per target: tmux panes get clean
     send-keys (no cross-session wrapper), background sessions may use the
     ♻ stop+resume pair, everything else gets UDS. No bridge-side queueing
     except ♻ resume — a mid-turn `claude stop` would kill the running turn.
     The CLI holds mid-turn input natively (TUI buffer / cross-session
     inbox), and the watcher delivers only once our marker shows up in the
-    transcript, so the reply path stays straight. Returns error string or
+    transcript, so the reply path stays straight. A oneshot turn auto-closes
+    its session once the answer is delivered. Returns error string or
     None on success."""
     with LOCK:  # check + slot reservation must be atomic vs the poll thread and queue drain
         entry = find_session(session_id)
@@ -384,7 +389,7 @@ def inject_text(session_id, text, chat_id, loop=None):
         turn = {
             "chat_id": chat_id, "tpath": tpath, "offset": offset,
             "marker": wire, "started": time.time(), "state": "injecting",
-            "loop": loop, "channel": channel,
+            "loop": loop, "oneshot": oneshot, "channel": channel,
             "label": entry.get("name", session_id[:8]),
         }
         TURNS[session_id] = turn
@@ -431,6 +436,20 @@ def drop_turn(sid):
         QUEUES.pop(sid, None)
 
 
+def turn_cleanup(sid, t):
+    """Retire a finished turn: a plain turn just drops its tracking state; a
+    /oneshot session is closed too — the spawned entry lives for one question.
+    Returns a delivery note for oneshot closures, else None."""
+    if not t.get("oneshot"):
+        drop_turn(sid)
+        return None
+    # a parked turn is answered by its forked job — close that, not the parent
+    ok, note = close_session(t.get("job_sid") or sid)  # drops the turn itself
+    return (f"☑ {t.get('label', sid[:8])} closed — resumable: "
+            f"claude --resume {sid[:8]}"
+            if ok else f"⚠️ auto-close failed: {note}")
+
+
 def deliver(sid, t, text):
     chat_id, thread = deliver_target(sid, t)
     if not chat_id:
@@ -469,9 +488,12 @@ def finish_turn(sid, t, note=None):
             deliver(sid, t, f"loop stopped: {err}")
         return
 
-    with LOCK:
-        TURNS.pop(sid, None)
+    with LOCK:  # drain before cleanup — drop_turn inside it clears QUEUES too
         queued = QUEUES.pop(sid, [])
+    cnote = turn_cleanup(sid, t)
+    if cnote:
+        deliver(sid, t, cnote)
+        return
     if queued:
         nxt, lp = queued[0]
         err = inject_text(sid, nxt, t["chat_id"], loop=lp)
@@ -524,7 +546,9 @@ def step_turn(sid, t, ags, now):
             return  # fork not visible yet — hold; TURN_TIMEOUT is the backstop
     if now - t["started"] > TURN_TIMEOUT:
         deliver(sid, t, "⏱ no completion within 30 min — giving up on this turn")
-        drop_turn(sid)
+        cnote = turn_cleanup(sid, t)
+        if cnote:
+            deliver(sid, t, cnote)
         return
     if t["state"] == "wait":
         if entry is None:
@@ -534,7 +558,9 @@ def step_turn(sid, t, ags, now):
         elif now - t["started"] > PICKUP_TIMEOUT:
             deliver(sid, t, "⚠️ session stayed idle — message may not have been "
                             "picked up. Try /sessions and resend.")
-            drop_turn(sid)
+            cnote = turn_cleanup(sid, t)
+            if cnote:
+                deliver(sid, t, cnote)
             return
     if t["state"] == "work":
         if now - t["started"] < 3:
@@ -727,6 +753,27 @@ def uniq_name(base):
     return f"{base}-{i}"
 
 
+def spawn_bg(d, name):
+    """Spawn `claude --bg -n <name>` in dir d. Returns (short_id, error)."""
+    _PENDING_NAMES.add(name)
+    try:
+        r = subprocess.run(["claude", "--bg", "-n", name], cwd=d,
+                           capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        _PENDING_NAMES.discard(name)
+        return None, "spawn timed out"
+    out = (r.stdout or "") + (r.stderr or "")
+    if "not trusted" in out.lower():
+        _PENDING_NAMES.discard(name)
+        return None, (f"{d} is not a trusted workspace — run `claude` once in it "
+                      "locally and accept the trust prompt, then retry.")
+    m = re.search(r"backgrounded · ([0-9a-f]+)", out)
+    if not m:
+        _PENDING_NAMES.discard(name)
+        return None, f"spawn failed: {out.strip()[:300]}"
+    return m.group(1), None
+
+
 # --- message handling ----------------------------------------------------------------
 
 def close_session(sid):
@@ -803,6 +850,8 @@ def handle_message(msg):
                   "/status — show target session state\n"
                   "/stop — interrupt the current turn\n"
                   "/loop <prompt> — re-prompt up to 5× until DONE\n"
+                  "/oneshot [<dir>] <question> — throwaway session: ask, "
+                  "get the answer, auto-closed\n"
                   "anything else — sent to the targeted session immediately "
                   "(the CLI queues mid-turn input; only ♻ resume waits for idle)\n\n"
                   "Replies come from the session's transcript. Watch live: "
@@ -874,26 +923,10 @@ def handle_message(msg):
             if mode in ("uds", "bg", "resume", "b", "r"):
                 name = uniq_name(re.sub(r"[^A-Za-z0-9._-]", "_",
                                         os.path.basename(d) or "claude"))
-                _PENDING_NAMES.add(name)
-                try:
-                    r = subprocess.run(["claude", "--bg", "-n", name], cwd=d,
-                                       capture_output=True, text=True, timeout=60)
-                except subprocess.TimeoutExpired:
-                    _PENDING_NAMES.discard(name)
-                    reply(chat_id, "spawn timed out")
+                short, err = spawn_bg(d, name)
+                if err:
+                    reply(chat_id, f"❌ {err}")
                     return
-                out = (r.stdout or "") + (r.stderr or "")
-                if "not trusted" in out.lower():
-                    _PENDING_NAMES.discard(name)
-                    reply(chat_id, f"❌ {d} is not a trusted workspace — run `claude` once in it "
-                                   "locally and accept the trust prompt, then retry.")
-                    return
-                mshort = re.search(r"backgrounded · ([0-9a-f]+)", out)
-                if not mshort:
-                    _PENDING_NAMES.discard(name)
-                    reply(chat_id, f"spawn failed: {out.strip()[:300]}")
-                    return
-                short = mshort.group(1)
                 time.sleep(1)
                 _AGENTS["ts"] = 0
                 entry = next((e for e in (agents(0) or [])
@@ -1061,6 +1094,66 @@ def handle_message(msg):
             err = inject_text(target["session_id"], prompt, chat_id,
                               loop={"prompt": prompt, "iter": 1})
             reply(chat_id, err or "Ralph Loop started (max 5 iterations)")
+            return
+
+        if cmd == "/oneshot":
+            parts = text.split(maxsplit=1)
+            rest = parts[1].strip() if len(parts) > 1 else ""
+            if not rest:
+                reply(chat_id, "Usage: /oneshot [<dir>] <question>\n"
+                               "Spawns a throwaway background session, asks it the "
+                               "question, delivers the answer and closes the session.")
+                return
+            cwd, question = None, rest
+            first = rest.split(None, 1)
+            if len(first) == 2:
+                d = os.path.abspath(os.path.expanduser(first[0]))
+                if os.path.isdir(d):
+                    cwd, question = d, first[1].strip()
+            if cwd is None:
+                # no dir arg — borrow the targeted session's project, else home
+                tgt = load_target()
+                entry = find_session(tgt["session_id"]) if tgt else None
+                cwd = entry.get("cwd") if entry else None
+                if not cwd or not os.path.isdir(cwd):
+                    cwd = os.path.expanduser("~")
+            name = uniq_name("oneshot-" + re.sub(r"[^A-Za-z0-9._-]", "_",
+                                                 os.path.basename(cwd) or "claude"))
+            short, err = spawn_bg(cwd, name)
+            if err:
+                reply(chat_id, f"❌ {err}")
+                return
+            # wait for registration — the sessionId is needed to inject
+            entry = None
+            for _ in range(15):
+                time.sleep(1)
+                _AGENTS["ts"] = 0
+                entry = next((e for e in (agents(0) or [])
+                              if e["sessionId"].startswith(short)), None)
+                if entry:
+                    break
+            if not entry:
+                _PENDING_NAMES.discard(name)
+                try:
+                    subprocess.run(["claude", "stop", short],
+                                   capture_output=True, text=True, timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass
+                reply(chat_id, "Oneshot spawned but never registered — stopped it. Try again.")
+                return
+            _PENDING_NAMES.discard(name)
+            sid = entry["sessionId"]
+            err = None
+            for _ in range(3):  # fresh session: socket + key may lag registration
+                err = inject_text(sid, question, chat_id, oneshot=True)
+                if not err:
+                    break
+                time.sleep(2)
+            if err:
+                close_session(sid)
+                reply(chat_id, f"❌ {err} — spawned session closed")
+                return
+            reply(chat_id, f"⚡ oneshot {name} ({short}) in {cwd} — answering…")
             return
 
         if cmd in BLOCKED_COMMANDS:

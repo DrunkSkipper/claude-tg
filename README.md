@@ -115,6 +115,7 @@ bridge and the container (it lives in the mounted `~/.claude`).
 | `/status` | Show target session state, queue, and pane status line |
 | `/stop` | Interrupt the target's turn (Escape in tmux panes; `claude stop` for bg) |
 | `/loop <prompt>` | Native Ralph loop: re-prompts up to 5× until the reply contains `DONE` |
+| `/oneshot [<dir>] <question>` | Fire-and-forget Q&A: spawns a throwaway ⚡ background session in `<dir>` (default: the targeted session's project, else `~`), asks the question, delivers the answer, then closes the session — the conversation stays `claude --resume <id>`-able. The current target is left untouched |
 | `/chatid` | Show this chat's id (for `TELEGRAM_FORUM_CHAT_ID`) |
 | `/help` | Show usage |
 | `/reload` | Re-read `~/.claude/telegram.env` (live config) |

@@ -42,6 +42,7 @@ Bridge and sessions never share a process; coordination is via session registrie
 - **`/stop`**: interactive sessions — Escape via the `tmux` field in the registry (`"claude:@2.%3"` → pane `%3`); background — `claude stop <shortId>` (conversation kept, `claude attach` reopens).
 - **`/close`**: shut a session down entirely — `tmux kill-pane` for panes, `claude stop` for background; conversation stays resumable (`claude --resume <shortId>`).
 - **`/loop`** is native now: re-injects the prompt up to 5× until the reply's tail matches `\bDONE\b`.
+- **`/oneshot [<dir>] <question>`**: spawn a throwaway ⚡ bg session (`spawn_bg`, shared with `/new`), inject the question with `oneshot=True` on the turn; `turn_cleanup` closes the session when the answer is delivered (also on pickup/turn timeout, and on inject failure right after spawn). `job_sid` is closed instead of the parent for parked turns. Cwd: dir arg > target's cwd > `~`.
 - **`/chatid`** prints the chat's id — setup helper for `TELEGRAM_FORUM_CHAT_ID`. **`/help`** mirrors the README usage card.
 
 ## Gotchas
