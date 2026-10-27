@@ -44,13 +44,13 @@ import time
 import urllib.request
 from pathlib import Path
 
-try:  # package import (pip/pipx install, python -m claude_tg)
+try:  # package import (pip/pipx install, python -m claude_tg) — works from any cwd
+    from . import telegram_lib
     from .telegram_lib import build_opener, send_markdown
 except ImportError:  # run as a plain script from a checkout — use the sibling lib
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import telegram_lib
     from telegram_lib import build_opener, send_markdown  # noqa: E402
-
-import telegram_lib  # noqa: E402  (reload_proxy is called on live config updates)
 
 CONF_FILE = os.path.expanduser("~/.claude/telegram.env")
 _CONF_MTIME = 0.0

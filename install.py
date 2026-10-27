@@ -6,6 +6,10 @@ server, and registers them with Claude Code.
   python3 install.py --hook     # Stop hook only (deploys the lib it needs)
   python3 install.py --mcp      # MCP server only (deploys the lib it needs)
   python3 install.py --lib      # shared lib only
+  python3 install.py --service [--dir PATH]
+                                # launchd user service running the bridge;
+                                # --dir selects the checkout (default: the
+                                # directory containing install.py)
 
 Nothing here reads or writes credentials: TELEGRAM_BOT_TOKEN stays in your
 environment, and the MCP registration is delegated to the `claude` CLI.
@@ -146,16 +150,17 @@ def service_reload():
 
 def service_install():
     """macOS launchd user service: keep the bridge running (repo checkout,
-    `python3 -m claude_tg`), restart on crash, log to a dedicated file."""
+    script launched by absolute path — no working-directory dependency),
+    restart on crash, log to a dedicated file."""
     if not shutil.which("launchctl"):
         die("launchctl not found — the launchd service is macOS-only")
-    if not (REPO / "claude_tg" / "__init__.py").exists():
+    script = REPO / "claude_tg" / "__init__.py"
+    if not script.exists():
         die(f"{REPO} does not look like the claude-tg repo checkout")
     LAUNCH_AGENTS.mkdir(parents=True, exist_ok=True)
     plist = {
         "Label": SERVICE_LABEL,
-        "ProgramArguments": [sys.executable, "-m", "claude_tg"],
-        "WorkingDirectory": str(REPO),
+        "ProgramArguments": [sys.executable, "-u", str(script)],
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(SERVICE_LOG),
@@ -214,8 +219,12 @@ def deploy_mcp():
 
 
 def main():
+    global REPO
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--dir", metavar="PATH", type=Path,
+                   help="claude-tg checkout to deploy from and run the bridge "
+                        f"from (default: {REPO})")
     p.add_argument("--hook", action="store_true", help="install the Stop hook")
     p.add_argument("--mcp", action="store_true", help="install the MCP server")
     p.add_argument("--lib", action="store_true",
@@ -229,6 +238,8 @@ def main():
     p.add_argument("--uninstall-service", action="store_true",
                    help="stop the launchd service and remove its plist")
     args = p.parse_args()
+    if args.dir:
+        REPO = args.dir.expanduser().resolve()
     if args.uninstall_service:
         service_uninstall()
         return

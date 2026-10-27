@@ -30,7 +30,7 @@ Telegram ──getUpdates poll──► claude-tg ──inject──► any runn
 | `claude_tg/` | the package: bridge (`__init__.py`) + shared sender (`telegram_lib.py`); installed as the `claude-tg` command |
 | `hooks/send-to-telegram.sh` | Claude Code `Stop` hook — inert under claude-tg; kept for hand-rolled marker flows |
 | `mcp/telegram_server.py` | stdio MCP server exposing `send_telegram(text)` so Claude can push messages **mid-turn** (auto-labeled with the session name) |
-| `install.py` | Installer: deploys lib + hook + MCP server (`--hook/--mcp/--lib`); launchd service options `--service` / `--stop-service` / `--reload-service` / `--uninstall-service` |
+| `install.py` | Installer: deploys lib + hook + MCP server (`--hook/--mcp/--lib`); launchd service options `--service` / `--stop-service` / `--reload-service` / `--uninstall-service`; `--dir PATH` selects the checkout to deploy from and run the bridge from |
 | `Dockerfile` + `docker-entrypoint.sh` | Container image (entrypoint seeds workspace trust for `/app`) |
 | `compose.yaml` + `env.example` | Compose service + config template (`cp env.example .env`) |
 | `pyproject.toml` | Packaging: `pip install .` / `pipx install .` → `claude-tg` command |
@@ -66,25 +66,31 @@ Telegram ──getUpdates poll──► claude-tg ──inject──► any runn
    ```
 4. Start the bridge — the installer doesn't cover this. Either install the
    console script (`pip install .`, or `pipx install .` for an isolated venv),
-   or run it straight from the checkout:
+   or run it straight from the checkout. **The working directory doesn't
+   matter** — every launch mode resolves its own paths:
    ```bash
    claude --bg                 # a persistent, idle background session (optional)
    claude-tg                   # console script (after pip/pipx install)…
-   python3 -m claude_tg        # …or straight from the checkout
+   python3 -m claude_tg        # …from the checkout (cwd = repo, or PYTHONPATH set)
+   python3 ~/git/claude-tg/claude_tg/__init__.py   # …from anywhere
    ```
 5. Message the bot on Telegram → `/sessions` → tap a session → just type.
 
 ### Autostart at login (macOS)
 
 ```bash
-python3 install.py --service
+python3 install.py --service              # runs the checkout install.py lives in
+python3 install.py --service --dir ~/git/claude-tg   # …or an explicit checkout
 ```
 
 Installs a launchd user agent that runs the bridge at login and restarts it on
-crash. It seeds `~/.claude/telegram.env` from your current environment on
-first install — after that, everyday changes go through `/reload` (no plist
-edits, no restarts). `--stop-service` stops it, `--uninstall-service` removes
-it.
+crash. The service launches `claude_tg/__init__.py` from the selected checkout
+by absolute path — no working-directory dependency, so the checkout can live
+anywhere (and `--dir` points the whole install — lib, hook, MCP, service — at
+a different checkout than the one containing `install.py`). It seeds
+`~/.claude/telegram.env` from your current environment on first install —
+after that, everyday changes go through `/reload` (no plist edits, no
+restarts). `--stop-service` stops it, `--uninstall-service` removes it.
 
 ## Environment variables
 

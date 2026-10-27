@@ -11,7 +11,7 @@ There is no test tooling — `python3 -m py_compile` + `bash -n` are the checks.
 ## Components
 
 - `claude_tg/` — the package: `__init__.py` is the bridge (long-polls Telegram, discovers sessions via `claude agents --json`, injects prompts over the UDS socket, tails the target session's transcript for replies; installed as the `claude-tg` console script via `claude_tg:main`); `telegram_lib.py` is the shared sender (proxy precedence, markdown→Telegram-HTML converter, 4096-splitting); deployed copy at `~/.claude/telegram_lib.py` used by hook and MCP server.
-- `install.py` — installer: deploys lib + hook + MCP server (`--hook/--mcp/--lib`); launchd service options `--service` / `--stop-service` / `--reload-service` / `--uninstall-service`.
+- `install.py` — installer: deploys lib + hook + MCP server (`--hook/--mcp/--lib`); launchd service options `--service` / `--stop-service` / `--reload-service` / `--uninstall-service`; `--dir PATH` selects the checkout to deploy from and run the bridge from (default: install.py's parent).
 - `hooks/send-to-telegram.sh` — Stop hook. **Inert under claude-tg** (no pending markers are written); kept for hand-rolled flows that write markers directly.
 - `mcp/telegram_server.py` — stdio MCP server, `send_telegram(text)` tool for mid-turn pushes (auto-labeled with the session's name, resolved from the owning claude process's pid via `agents --json`); registered user-scope via `claude mcp add --scope user telegram -- python3 ~/.claude/telegram-mcp/server.py`.
 - `Dockerfile` + `docker-entrypoint.sh` + `compose.yaml` + `env.example` — container mode (in-container sessions only on macOS; see README Docker).
@@ -21,7 +21,9 @@ There is no test tooling — `python3 -m py_compile` + `bash -n` are the checks.
 ```bash
 python3 install.py     # deploys lib + hook + MCP server (--hook/--mcp/--lib for pieces)
 claude mcp add --scope user telegram -- python3 ~/.claude/telegram-mcp/server.py
-claude-tg             # console script; needs TELEGRAM_BOT_TOKEN, claude on PATH (or: python3 -m claude_tg)
+claude-tg             # console script; needs TELEGRAM_BOT_TOKEN, claude on PATH
+                      # (or: python3 -m claude_tg; or python3 <repo>/claude_tg/__init__.py —
+                      # any cwd works: script mode resolves the sibling lib, package mode uses relative imports)
 claude --bg            # optional: persistent idle background session to drive
 docker compose up -d --build   # containerized instead (config in .env, see README Docker)
 ```
