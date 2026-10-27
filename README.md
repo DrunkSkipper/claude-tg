@@ -96,6 +96,7 @@ it.
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | *(unset)* | Standard proxy vars, auto-detected when `TELEGRAM_HTTP_PROXY` is unset |
 | `TELEGRAM_FORUM_CHAT_ID` | *(unset)* | Forum-enabled group id → one topic per session (bot needs *Manage Topics*); unset = bold-name marking in the DM |
 | `TMUX_SESSION` | `claude` | Existing tmux session `/new <dir> tmux` adds windows to |
+| `ONESHOT_DIR` | `~/.claude/oneshot` | Neutral scratch workspace `/oneshot` spawns throwaway sessions in (no project context); created on first use — accept the workspace-trust prompt there once (subdirs of a trusted workspace inherit trust, so `ONESHOT_DIR` under one never needs it) |
 
 ### Live updates
 
@@ -115,7 +116,7 @@ bridge and the container (it lives in the mounted `~/.claude`).
 | `/status` | Show target session state, queue, and pane status line |
 | `/stop` | Interrupt the target's turn (Escape in tmux panes; `claude stop` for bg) |
 | `/loop <prompt>` | Native Ralph loop: re-prompts up to 5× until the reply contains `DONE` |
-| `/oneshot [<dir>] <question>` | Fire-and-forget Q&A: spawns a throwaway ⚡ background session in `<dir>` (default: the targeted session's project, else `~`), asks the question, delivers the answer, then closes the session — the conversation stays `claude --resume <id>`-able. The current target is left untouched |
+| `/oneshot [<dir>] <question>` | Fire-and-forget Q&A: spawns a throwaway ⚡ background session in a neutral scratch dir (`ONESHOT_DIR` — no project context; pass `<dir>` to ground the question in a project), asks the question, delivers the answer, then closes the session — the conversation stays `claude --resume <id>`-able. The current target is left untouched |
 | `/chatid` | Show this chat's id (for `TELEGRAM_FORUM_CHAT_ID`) |
 | `/help` | Show usage |
 | `/reload` | Re-read `~/.claude/telegram.env` (live config) |

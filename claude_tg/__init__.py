@@ -20,8 +20,8 @@ Bot commands:
   /new <dir> [tmux|uds|bg]
                      spawn a session in dir (default: tmux window)
   /oneshot [<dir>] <question>
-                     throwaway bg session: ask one question, deliver the
-                     answer, close the session
+                     one-shot Q&A in a neutral scratch dir (opt: <dir> for
+                     project context); answer delivered, session closed
   /status            show target session state + pane status line
   /stop              interrupt the target's current turn
   /close             close the targeted session
@@ -62,6 +62,10 @@ _RUNTIME = {
     "TELEGRAM_HTTP_PROXY": os.environ.get("TELEGRAM_HTTP_PROXY", ""),
     "TELEGRAM_FORUM_CHAT_ID": os.environ.get("TELEGRAM_FORUM_CHAT_ID", ""),
     "TMUX_SESSION": os.environ.get("TMUX_SESSION", "claude"),
+    # neutral /oneshot workspace: no project context (subdirs of a trusted
+    # workspace inherit trust — ~/.claude itself is not trusted, so first use
+    # needs a one-time trust acceptance in the dir)
+    "ONESHOT_DIR": os.environ.get("ONESHOT_DIR", os.path.expanduser("~/.claude/oneshot")),
 }
 CHAT_ID_FILE = os.path.expanduser("~/.claude/telegram_chat_id")
 TARGET_FILE = os.path.expanduser("~/.claude/telegram_target")
@@ -98,7 +102,12 @@ LOCK = threading.RLock()
 
 
 def munge(path):
-    return path.replace("/", "-").lstrip("-")
+    """CLI transcript-bucket name for a cwd: 2.1.309 maps every character
+    outside [A-Za-z0-9_] to '-' and KEEPS the leading dash ("/x/y.z" →
+    "-x-y-z"). Verified against ~/.claude/projects listings; the old
+    replace("/","-")+lstrip spelling matched no bucket at all, which silently
+    killed the whole transcript reply tail."""
+    return re.sub(r"[^A-Za-z0-9_]", "-", path)
 
 
 # --- session discovery --------------------------------------------------------
@@ -181,8 +190,15 @@ def stop_id(entry):
 
 
 def transcript_path(entry):
-    return (Path.home() / ".claude" / "projects" /
-            munge(entry.get("cwd", "")) / f"{entry['sessionId']}.jsonl")
+    sid = entry["sessionId"]
+    p = (Path.home() / ".claude" / "projects" /
+         munge(entry.get("cwd", "")) / f"{sid}.jsonl")
+    if p.exists():
+        return p
+    # munge drift across CLI builds — the sessionId UUID is unique project-wide,
+    # the bucket spelling is not: find the transcript wherever it lives
+    hits = list((Path.home() / ".claude" / "projects").glob(f"*/{sid}.jsonl"))
+    return hits[0] if hits else p
 
 
 # --- UDS injection ------------------------------------------------------------
@@ -850,8 +866,8 @@ def handle_message(msg):
                   "/status — show target session state\n"
                   "/stop — interrupt the current turn\n"
                   "/loop <prompt> — re-prompt up to 5× until DONE\n"
-                  "/oneshot [<dir>] <question> — throwaway session: ask, "
-                  "get the answer, auto-closed\n"
+                  "/oneshot [<dir>] <question> — one-shot Q&A, no project "
+                  "context (opt: <dir>), auto-closed\n"
                   "anything else — sent to the targeted session immediately "
                   "(the CLI queues mid-turn input; only ♻ resume waits for idle)\n\n"
                   "Replies come from the session's transcript. Watch live: "
@@ -1101,8 +1117,9 @@ def handle_message(msg):
             rest = parts[1].strip() if len(parts) > 1 else ""
             if not rest:
                 reply(chat_id, "Usage: /oneshot [<dir>] <question>\n"
-                               "Spawns a throwaway background session, asks it the "
-                               "question, delivers the answer and closes the session.")
+                               "Asks a fresh throwaway session in a neutral scratch "
+                               "dir (no project context — pass <dir> to ground it "
+                               "in a project), delivers the answer, closes it.")
                 return
             cwd, question = None, rest
             first = rest.split(None, 1)
@@ -1110,17 +1127,22 @@ def handle_message(msg):
                 d = os.path.abspath(os.path.expanduser(first[0]))
                 if os.path.isdir(d):
                     cwd, question = d, first[1].strip()
+            scratch = False
             if cwd is None:
-                # no dir arg — borrow the targeted session's project, else home
-                tgt = load_target()
-                entry = find_session(tgt["session_id"]) if tgt else None
-                cwd = entry.get("cwd") if entry else None
-                if not cwd or not os.path.isdir(cwd):
-                    cwd = os.path.expanduser("~")
-            name = uniq_name("oneshot-" + re.sub(r"[^A-Za-z0-9._-]", "_",
+                # dir-agnostic default: the neutral scratch workspace — no
+                # project CLAUDE.md applies, only the global ~/CLAUDE.md
+                cwd = _RUNTIME["ONESHOT_DIR"]
+                os.makedirs(cwd, exist_ok=True)
+                scratch = True
+            name = uniq_name("oneshot" if scratch else
+                             "oneshot-" + re.sub(r"[^A-Za-z0-9._-]", "_",
                                                  os.path.basename(cwd) or "claude"))
             short, err = spawn_bg(cwd, name)
             if err:
+                if scratch and "trust" in err.lower():
+                    err = (f"{cwd} is not trusted yet — one-time setup: run "
+                           "`claude` in it once and accept the trust prompt, "
+                           "then retry (never needed again).")
                 reply(chat_id, f"❌ {err}")
                 return
             # wait for registration — the sessionId is needed to inject
@@ -1153,7 +1175,7 @@ def handle_message(msg):
                 close_session(sid)
                 reply(chat_id, f"❌ {err} — spawned session closed")
                 return
-            reply(chat_id, f"⚡ oneshot {name} ({short}) in {cwd} — answering…")
+            reply(chat_id, f"⚡ {name} ({short}) in {cwd} — answering…")
             return
 
         if cmd in BLOCKED_COMMANDS:
