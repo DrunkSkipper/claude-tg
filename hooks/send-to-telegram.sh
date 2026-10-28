@@ -14,7 +14,13 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-YOUR_BOT_TOKEN_HERE}"
 #   export TELEGRAM_HTTP_PROXY="none"  # force-disable proxy
 export TELEGRAM_HTTP_PROXY="${TELEGRAM_HTTP_PROXY:-}"
 INPUT=$(cat)
-echo "$(date '+%F %T') stop-hook run" >> "$HOME/.claude/hooks/telegram-hook.log"
+# Session label for the log: resolve via the registry (same source the MCP
+# server uses) — Stop input carries session_id; the registry maps it to the
+# CLI-assigned name. Falls back to the raw id, then "unknown".
+SID=$(echo "$INPUT" | jq -r '.session_id // empty')
+SNAME=$(jq -r --arg s "$SID" 'select(.sessionId==$s) | (.name // .sessionId[0:8])' \
+        "$HOME"/.claude/sessions/*.json 2>/dev/null | head -1)
+echo "$(date '+%F %T') stop-hook run [${SNAME:-${SID:-unknown}}]" >> "$HOME/.claude/hooks/telegram-hook.log"
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path')
 CHAT_ID_FILE=~/.claude/telegram_chat_id
 PENDING_DIR=~/.claude/telegram_pending
