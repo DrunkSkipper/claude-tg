@@ -59,6 +59,19 @@ def session_label():
                 break
     return _label
 
+
+def combined_header(user_header):
+    """Session name is stamped first whenever it's resolvable; a caller
+    header is appended after it. The old `header or session_label()` let
+    models habitually pass content titles ('FRR — review 2/3'), which
+    suppressed the name entirely — the exact failure auto-labeling
+    exists to prevent."""
+    label = session_label()
+    user_header = (user_header or "").strip()
+    if label and user_header:
+        return f"{label} — {user_header}"
+    return label or user_header or None
+
 TOOLS = [
     {
         "name": "send_telegram",
@@ -68,8 +81,9 @@ TOOLS = [
             "working. Do NOT send the final answer of a Telegram-initiated "
             "task — the bridge delivers it automatically at turn end (a "
             "tool send would duplicate it). Long texts are split into "
-            "numbered parts automatically. Each push is auto-labeled with "
-            "this session's name unless you pass an explicit header. "
+            "numbered parts automatically. This session's name is always "
+            "stamped first in the header; an explicit header is appended "
+            "after it — don't repeat the session name yourself. "
             "Pre-format for Telegram: bold "
             "headings, code refs in backticks, no wide tables (use labeled "
             "lists instead)."
@@ -110,7 +124,7 @@ def tool_call(params: dict) -> dict:
                 "isError": True}
 
     sent, total, errors = send_markdown(text, chat_id, token,
-                                        params.get("header") or session_label())
+                                        combined_header(params.get("header")))
     summary = f"sent {sent}/{total} part(s)" + ("; " + "; ".join(errors) if errors else "")
     return {"content": [{"type": "text", "text": summary}], "isError": bool(errors)}
 
