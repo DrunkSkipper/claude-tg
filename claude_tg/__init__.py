@@ -115,6 +115,60 @@ def munge(path):
 _AGENTS = {"ts": 0.0, "data": None}
 
 
+_ATTACH_RE = re.compile(r"(?:^|/)claude(?:\.exe)?\s+attach\s+(\S+)")
+
+
+def _attach_viewers():
+    """Live `claude attach` clients: {target-token: (pid, tty)}.
+
+    The client keeps its original argv (`claude attach <id|name>`) and its
+    stdio is the terminal it renders into; daemon-era bg sessions hold no
+    named socket the viewer connects to, so argv is the only handle."""
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,tty=,command="],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return {}
+    out = {}
+    for line in r.stdout.splitlines():
+        m = _ATTACH_RE.search(line)
+        if not m:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        out[m.group(1)] = (int(parts[0]), parts[1])
+    return out
+
+
+def _pane_ref_by_tty(tty):
+    """'/dev/ttys012' → 'claude:@25.%28' — the tmux pane rendering that tty."""
+    try:
+        r = subprocess.run(["tmux", "list-panes", "-a", "-F",
+                            "#{pane_tty}\t#{session_name}:#{window_id}.#{pane_id}"],
+                           capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    for line in r.stdout.splitlines():
+        ptty, _, ref = line.partition("\t")
+        if ptty == tty:
+            return ref
+    return None
+
+
+def _attach_pane_of(entry, viewers):
+    """tmux pane of a live viewer of this bg session, else None.
+
+    `claude attach` takes <id|name> (short ids and exact names match here)."""
+    toks = {(entry.get("jobId") or entry.get("id") or "")[:8],
+            entry.get("sessionId", "")[:8],
+            entry.get("sessionId", ""), entry.get("name") or ""}
+    for tgt, (_pid, tty) in viewers.items():
+        if tgt in toks and tty not in ("?", "??"):
+            return _pane_ref_by_tty(f"/dev/{tty}")
+    return None
+
+
 def agents(max_age=2.0):
     """All running sessions (interactive + background), cached briefly.
 
@@ -164,11 +218,25 @@ def agents(max_age=2.0):
             os.kill(pid, 0)  # registry keeps dead leftovers
         except OSError:
             continue
-        if e.get("spare"):
-            continue  # daemon pre-warm spare (name = jobId[:8]) — not a session
         if e.get("kind") == "bg":  # registry says bg, agents --json says background
             e["kind"] = "background"
         data.append(e)
+    # 2.1.309 bg jobs run under a supervisor daemon (roster.json); daemon
+    # machinery — the supervisor itself, --daemon-worker processes, and
+    # pre-warmed bg-spares (spare flag, name = jobId[:8]) — registers in the
+    # same namespace but is not a session. Without tmux it would surface as
+    # a phantom row marked ⚡.
+    data = [e for e in data
+            if e.get("kind") not in ("daemon", "daemon-worker") and not e.get("spare")]
+    # daemon-era bg sessions register with no tmux, but a live `claude attach`
+    # viewer in a tmux pane makes one a pane session in the user's eyes —
+    # stamp the viewer's pane so ⌨ send-keys / Escape apply to it
+    viewers = _attach_viewers()
+    for e in data:
+        if e.get("kind") == "background" and not e.get("tmux"):
+            pane = _attach_pane_of(e, viewers)
+            if pane:
+                e["tmux"] = pane
     _AGENTS["ts"], _AGENTS["data"] = now, data
     return data
 
